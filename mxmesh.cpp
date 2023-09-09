@@ -592,6 +592,177 @@ bool GenerateNewPolyFromCache(const wchar_t* mxm_package, INode* node)
 	theHold.Accept(L"MXMesh :: RestoreMesh");
 	return true;
 }
+string GetStorageFilePath()
+{
+	// Get Temp Path
+	string tempAddr = filesystem::temp_directory_path().string();
+
+	// Return Storage Path
+	return tempAddr + "\\MXMeshStorage.mxo";
+}
+bool CopyMeshToStorage(INode* node)
+{
+	if (!node) { return false; }
+	DebugLog(L"Copying object data [%s] storage mesh buffer...", node->GetName());
+
+	if (cacheBufferingMode == DISK_CACHE_BUFFERING_MODE)
+		DebugLog(L"Config `Cache Buffering Mode` = DISK_CACHE_BUFFERING_MODE");
+	if (cacheBufferingMode == MEMORY_CACHE_BUFFERING_MODE)
+		DebugLog(L"Config `Cache Buffering Mode` = MEMORY_CACHE_BUFFERING_MODE");
+
+	profiler.Reset(); profiler.Start();
+
+	TimeValue t = GetCOREInterface()->GetTime();
+	Object* obj = node->EvalWorldState(t).obj;
+
+	if (obj->CanConvertToType(triobjectCID))
+	{
+		// Get Tri Object
+		TriObject* tobj = (TriObject*)obj->ConvertToType(t, triobjectCID); if (!tobj) { return false; }
+
+		// Get Mesh
+		Mesh mesh = tobj->GetMesh();
+
+		// Compute Normals
+		mesh.SpecifyNormals();
+		MeshNormalSpec* mesh_ns = mesh.GetSpecifiedNormals();
+		mesh_ns->CheckNormals();
+
+		// Get Mesh Data Sizes
+		int vNum = mesh.numVerts;
+		int nNum = mesh_ns->GetNumNormals();
+		int fNum = mesh.numFaces;
+		int tNum = mesh.numTVerts;
+
+		MaxMeshMetaData meshMeta;
+		meshMeta.vNum = vNum;
+		meshMeta.nNum = nNum;
+		meshMeta.fNum = fNum;
+		meshMeta.tNum = tNum;
+
+		// Dump Information
+		sprintf_s(meshMeta.name, sizeof meshMeta.name, "%S", node->GetName());
+		meshMeta.col = node->GetWireColor();
+
+		// Dump Transformations
+		meshMeta.tm = node->GetObjTMAfterWSM(t);
+		decomp_affine(meshMeta.tm, &meshMeta.affine);
+		QuatToEuler(meshMeta.affine.q, meshMeta.rot);
+		meshMeta.pos.x = meshMeta.affine.t.x;
+		meshMeta.pos.y = meshMeta.affine.t.y;
+		meshMeta.pos.z = meshMeta.affine.t.z;
+		meshMeta.rot.x = RadToDeg_float(meshMeta.rot.x);
+		meshMeta.rot.y = RadToDeg_float(meshMeta.rot.y);
+		meshMeta.rot.z = RadToDeg_float(meshMeta.rot.z);
+		meshMeta.scale.x = meshMeta.affine.k.x;
+		meshMeta.scale.y = meshMeta.affine.k.y;
+		meshMeta.scale.z = meshMeta.affine.k.z;
+
+		// Get Temp Path
+		string tempAddr = filesystem::temp_directory_path().string();
+
+		// Dump Raw Buffers
+		if (cacheBufferingMode == DISK_CACHE_BUFFERING_MODE)
+		{
+			fileWritter.open(tempAddr + "\\max-mesh.vtx", ios::binary | ios::out);
+			fileWritter.write((char*)mesh.verts, vNum * sizeof(Point3));
+			fileWritter.close();
+
+			fileWritter.open(tempAddr + "\\max-mesh.tex", ios::binary | ios::out);
+			fileWritter.write((char*)mesh.tVerts, tNum * sizeof(UVVert));
+			fileWritter.close();
+
+			fileWritter.open(tempAddr + "\\max-mesh.idx", ios::binary | ios::out);
+			fileWritter.write((char*)mesh.faces, fNum * sizeof(Face));
+			fileWritter.close();
+
+			fileWritter.open(tempAddr + "\\max-mesh.tdx", ios::binary | ios::out);
+			fileWritter.write((char*)mesh.tvFace, fNum * sizeof(TVFace));
+			fileWritter.close();
+
+			fileWritter.open(tempAddr + "\\max-mesh.ndx", ios::binary | ios::out);
+			fileWritter.write((char*)mesh_ns->GetFaceArray(), fNum * sizeof(MeshNormalFace));
+			fileWritter.close();
+
+			fileWritter.open(tempAddr + "\\max-mesh.nrm", ios::binary | ios::out);
+			fileWritter.write((char*)mesh_ns->GetNormalArray(), nNum * sizeof(Point3));
+			fileWritter.close();
+
+			fileWritter.open(tempAddr + "\\max-mesh.mta", ios::binary | ios::out);
+			fileWritter.write((char*)&meshMeta, sizeof(MaxMeshMetaData));
+			fileWritter.close();
+		}
+		if (cacheBufferingMode == MEMORY_CACHE_BUFFERING_MODE)
+		{
+			vtxBuffer = stringstream(string(reinterpret_cast<char*>((char*)mesh.verts), vNum * sizeof(Point3)));
+			nrmBuffer = stringstream(string(reinterpret_cast<char*>((char*)mesh_ns->GetNormalArray()), nNum * sizeof(Point3)));
+			texBuffer = stringstream(string(reinterpret_cast<char*>((char*)mesh.tVerts), tNum * sizeof(UVVert)));
+			idxBuffer = stringstream(string(reinterpret_cast<char*>((char*)mesh.faces), fNum * sizeof(Face)));
+			tdxBuffer = stringstream(string(reinterpret_cast<char*>((char*)mesh.tvFace), fNum * sizeof(TVFace)));
+			ndxBuffer = stringstream(string(reinterpret_cast<char*>((char*)mesh_ns->GetFaceArray()), fNum * sizeof(MeshNormalFace)));
+			mtaBuffer = stringstream(string(reinterpret_cast<char*>((char*)&meshMeta), sizeof(MaxMeshMetaData)));
+		}
+
+		// Remove Package If Exists
+		std::remove(GetStorageFilePath().c_str());
+
+		// Compressing
+		Zipper zipper(_strlwr((char*)GetStorageFilePath().c_str()));
+		if (cacheBufferingMode == DISK_CACHE_BUFFERING_MODE)
+		{
+			zipper.add(tempAddr + "\\max-mesh.vtx", compressionMode);
+			zipper.add(tempAddr + "\\max-mesh.nrm", compressionMode);
+			zipper.add(tempAddr + "\\max-mesh.tex", compressionMode);
+			zipper.add(tempAddr + "\\max-mesh.idx", compressionMode);
+			zipper.add(tempAddr + "\\max-mesh.tdx", compressionMode);
+			zipper.add(tempAddr + "\\max-mesh.ndx", compressionMode);
+			zipper.add(tempAddr + "\\max-mesh.mta", compressionMode);
+		}
+		if (cacheBufferingMode == MEMORY_CACHE_BUFFERING_MODE)
+		{
+			zipper.add(vtxBuffer, "max-mesh.vtx", compressionMode);
+			zipper.add(nrmBuffer, "max-mesh.nrm", compressionMode);
+			zipper.add(texBuffer, "max-mesh.tex", compressionMode);
+			zipper.add(idxBuffer, "max-mesh.idx", compressionMode);
+			zipper.add(tdxBuffer, "max-mesh.tdx", compressionMode);
+			zipper.add(ndxBuffer, "max-mesh.ndx", compressionMode);
+			zipper.add(mtaBuffer, "max-mesh.mta", compressionMode);
+		}
+		zipper.close();
+
+		// Clear Up
+		if (cacheBufferingMode == DISK_CACHE_BUFFERING_MODE) {
+			filesystem::remove(tempAddr + "\\max-mesh.vtx");
+			filesystem::remove(tempAddr + "\\max-mesh.nrm");
+			filesystem::remove(tempAddr + "\\max-mesh.tex");
+			filesystem::remove(tempAddr + "\\max-mesh.idx");
+			filesystem::remove(tempAddr + "\\max-mesh.tdx");
+			filesystem::remove(tempAddr + "\\max-mesh.ndx");
+			filesystem::remove(tempAddr + "\\max-mesh.mta");
+		}
+		if (cacheBufferingMode == MEMORY_CACHE_BUFFERING_MODE) {
+			vtxBuffer.clear(); stringstream().swap(vtxBuffer);
+			nrmBuffer.clear(); stringstream().swap(nrmBuffer);
+			texBuffer.clear(); stringstream().swap(texBuffer);
+			idxBuffer.clear(); stringstream().swap(idxBuffer);
+			tdxBuffer.clear(); stringstream().swap(tdxBuffer);
+			ndxBuffer.clear(); stringstream().swap(ndxBuffer);
+			mtaBuffer.clear(); stringstream().swap(mtaBuffer);
+		}
+
+		DebugLog(L"Object [%s] mesh data successfully copied in %f ms", node->GetName(), profiler.ElapsedMilliseconds());
+		return true;
+	}
+
+	DebugLog(L"Copying object [%s] mesh data failed.", node->GetName());
+	return false;
+}
+bool PasteMeshFromStorage(INode* node)
+{
+	string storageFilePath = GetStorageFilePath();
+	wstring storageFilePathWS(storageFilePath.begin(), storageFilePath.end());
+	return GenerateNewPolyFromCache(storageFilePathWS.c_str(), node);
+}
 
 // Maxscript Exposed API
 MaxMeshMXS(Cache, "Cache");
@@ -769,15 +940,33 @@ Value* SetCompressionMode_api(Value** arg_list, int count)
 		throw RuntimeError(L"Invalid Inputs, Correct : MXMesh.SetCompressionMode [#faster][#better]"); return &false_value;
 	}
 }
-MaxMeshMXS(CopyMesh, "CacheToMemory");
+MaxMeshMXS(CopyMesh, "CopyMesh");
 Value* CopyMesh_api(Value** arg_list, int count)
 {
-	throw RuntimeError(L"<< Not Implemented Yet >>"); return &false_value;
+	if (count == 1)
+	{
+		INode* node = arg_list[0]->to_node();
+		if (CopyMeshToStorage(node)) return &true_value;
+		else return &false_value;
+	}
+	else
+	{
+		throw RuntimeError(L"Invalid Inputs, Correct : MXMesh.CopyMesh <node>"); return &false_value;
+	}
 }
-MaxMeshMXS(PasteMesh, "RestoreFromMemory");
+MaxMeshMXS(PasteMesh, "PasteMesh");
 Value* PasteMesh_api(Value** arg_list, int count)
 {
-	throw RuntimeError(L"<< Not Implemented Yet >>"); return &false_value;
+	if (count == 1)
+	{
+		INode* node = arg_list[0]->to_node();
+		if (PasteMeshFromStorage(node)) return &true_value;
+		else return &false_value;
+	}
+	else
+	{
+		throw RuntimeError(L"Invalid Inputs, Correct : MXMesh.PasteMesh <node>"); return &false_value;
+	}
 }
 MaxMeshMXS(SetDebugMode, "SetDebugMode");
 Value* SetDebugMode_api(Value** arg_list, int count)

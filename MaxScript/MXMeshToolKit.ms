@@ -5,7 +5,7 @@
 
 try
 (
-	rollout mxmeshUI "MXMesh 2.4 (BETA)" width:185 height:755
+	rollout mxmeshUI "MXMesh 2.6 (BETA)" width:185 height:750
 	(
 		-- User Interface
 		GroupBox 'p1' ".:: Operations ::." pos:[6,7] width:170 height:158 align:#left
@@ -21,20 +21,25 @@ try
 		button 'prugeCollect' "Purge and Collect" pos:[16,139] width:150 height:20 align:#left
 		button 'restore' "Restore" pos:[5,695] width:84 height:23 align:#left
 		button 'del' "Delete" pos:[94,695] width:84 height:23 align:#left
-		button 'copyMesh' "Copy Mesh" pos:[16,192] width:150 height:20 align:#left enabled:false
-		button 'pasteMesh' "Paste Mesh" pos:[16,216] width:150 height:20 align:#left enabled:false
+		button 'copyMesh' "Copy Mesh" pos:[16,192] width:150 height:20 align:#left
+		button 'pasteMesh' "Paste Mesh" pos:[16,216] width:150 height:20 align:#left
 		dropdownList 'buffMod' "Cache Buffering Mode" pos:[16,295] width:151 height:40 items:#("In-Memory (Faster)", "On-Disk (Optimized)") selection:1 align:#left
 		dropdownList 'restoreMod' "Restore Mode" pos:[16,339] width:151 height:40 items:#("Single Thread", "Multi Threaded") selection:2 align:#left
 		dropdownList 'compMod' "Compression Mode" pos:[16,384] width:151 height:40 items:#("Faster", "Better (Smaller)") selection:2 align:#left
 		checkbox 'dbgMode' "Debug Mode" pos:[16,432] width:97 height:15 align:#left
-		label 'dev' "By MemarDesign™ LLC." pos:[8,729] width:167 height:18 align:#left
+		HyperLink 'dev' "By MemarDesign™ LLC." pos:[8,726] width:167 height:18 align:#left color:(color 32 185 172) enabled:false
 		
 		-- Functions
 		fn refreshList = 
 		(
 			chckPts.items = #()
 			mxoPackages = getFiles (MXMesh.GetCachePath() + "\*.mxo*")
-			for mxo in mxoPackages do chckPts.items = Append chckPts.items (getFilenameFile mxo)
+			for mxo in mxoPackages do 
+			( 
+				mxoFileName = getFilenameFile mxo;
+				if mxoFileName == "mxmeshstorage" do continue
+				chckPts.items = Append chckPts.items mxoFileName
+			)
 		)
 		
 		fn restoreByName mxoName = 
@@ -66,7 +71,7 @@ try
 		
 		on restoreFrom pressed do
 		(
-			mxo = getOpenFileName types:"Max Mesh Object (Zipped)(*.mxo)|*.mxo"
+			mxo = getOpenFileName types:"Max Mesh Object (*.mxo)|*.mxo"
 			if mxo != undefined do MXMesh.Restore mxo
 		)
 		
@@ -148,7 +153,7 @@ try
 		(
 			if selection.count == 1 do
 			(
-				MXMesh.CacheToMemory $
+				MXMesh.CopyMesh $
 			)
 		)
 		
@@ -156,7 +161,7 @@ try
 		(
 			if selection.count == 1 do
 			(
-				MXMesh.CacheToMemory $
+				MXMesh.PasteMesh $
 			)
 		)
 		
@@ -167,4 +172,5 @@ try
 	)
 
 	createdialog mxmeshUI
+	
 ) catch ( messageBox ("Fatal Error : " + getCurrentException()) title:"MXMesh Error" )
